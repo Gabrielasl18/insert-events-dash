@@ -1,0 +1,338 @@
+{
+  "last_seg" : 1000,
+  "actions" : [
+        {
+            "seg_start": 1,
+            "seg_end": 2,
+            "action": {
+                "name" : "start",
+                "description": "Luz Variando de Cores",
+                "color": [255, 255, 255]
+            }
+        },
+        {
+            "seg_start": 3,
+            "seg_end": 4,
+            "action": {
+                "name" : "start",
+                "description": "Luz Variando de Cores",
+                "color": [0, 0, 0]
+            }
+        },
+        {
+            "seg_start": 11,
+            "seg_end": 11,
+            "action": {
+                "name" : "stop",
+                "description": "STOP Luz Variando",
+                "color": [0, 0, 0]
+            }
+        },
+        {
+            "seg_start": 12,
+            "seg_end": 14,
+            "action": {
+                "name" : "start",
+                "description": "Luz Branca 1",
+                "color": [255, 255, 255]
+            }
+        },
+        {
+            "seg_start": 16,
+            "seg_end": 17,
+            "action": {
+                "name" : "stop",
+                "description": "STOP Luz Branca 1",
+                "color": [0, 0, 0]
+            }
+        },
+        {
+            "seg_start": 19,
+            "seg_end": 22,
+            "action": {
+                "name" : "start",
+                "description": "Luz Vermelha",
+                "color": [255, 0, 0]
+            }
+        },
+        {
+            "seg_start": 23,
+            "seg_end": 29,
+            "action": {
+                "name" : "stop",
+                "description": "STOP Luz Vermelha",
+                "color": [0, 0, 0]
+            }
+        },
+        {
+            "seg_start": 105,
+            "seg_end": 140,
+            "action": {
+                "name" : "start",
+                "description": "Luz Vermelha Escura 1",
+                "color": [170, 0, 0]
+            }
+        },
+        {
+            "seg_start": 141,
+            "seg_end": 141,
+            "action": {
+                "name" : "stop",
+                "description": "STOP Luz Vermelha Escura 1",
+                "color": [0, 0, 0]
+            }
+        },
+        {
+            "seg_start": 142,
+            "seg_end": 172,
+            "action": {
+                "name" : "start",
+                "description": "Luz Azul Escura",
+                "color": [0, 0, 170]
+            }
+        },
+        {
+            "seg_start": 173,
+            "seg_end": 173,
+            "action": {
+                "name" : "stop",
+                "description": "STOP Luz Azul Escura",
+                "color": [0, 0, 0]
+            }
+        },
+        {
+            "seg_start": 174,
+            "seg_end": 239,
+            "action": {
+                "name" : "stop",
+                "description": "Tudo apagado",
+                "color": [0, 0, 0]
+            }
+        },
+        {
+            "seg_start": 240,
+            "seg_end": 491,
+            "action": {
+                "name" : "start",
+                "description": "Luz Branca 2",
+                "color": [255, 255, 255]
+            }
+        },
+        {
+            "seg_start": 492,
+            "seg_end": 492,
+            "action": {
+                "name" : "stop",
+                "description": "STOP Luz Branca 2",
+                "color": [0, 0, 0]
+            }
+        },
+        {
+            "seg_start": 493,
+            "seg_end": 528,
+            "action": {
+                "name" : "start",
+                "description": "Luz Amarela 1",
+                "color": [255, 190, 0]
+            }
+        },
+        {
+            "seg_start": 529,
+            "seg_end": 529,
+            "action": {
+                "name" : "stop",
+                "description": "STOP Luz Amarela 1",
+                "color": [0, 0, 0]
+            }
+        },
+        {
+            "seg_start": 530,
+            "seg_end": 538,
+            "action": {
+                "name" : "start",
+                "description": "Luz Vermelho Escuro 2",
+                "color": [170, 0, 0]
+            }
+        },
+        {
+            "seg_start": 539,
+            "seg_end": 539,
+            "action": {
+                "name" : "stop",
+                "description": "STOP Luz Vermelho Escuro 2",
+                "color": [0, 0, 0]
+            }
+        },
+        {
+            "seg_start": 540,
+            "seg_end": 542,
+            "action": {
+                "name" : "start",
+                "description": "Luz Azul 1",
+                "color": [0, 0, 255]
+            }
+        },
+        {
+            "seg_start": 543,
+            "seg_end": 543,
+            "action": {
+                "name" : "stop",
+                "description": "STOP Luz Azul 1",
+                "color": [0, 0, 0]
+            }
+        },
+        {
+            "seg_start": 544,
+            "seg_end": 608,
+            "action": {
+                "name" : "start",
+                "description": "Luz Branca 3",
+                "color": [255, 255, 255]
+            }
+        },
+        {
+            "seg_start": 609,
+            "seg_end": 609,
+            "action": {
+                "name" : "stop",
+                "description": "STOP Luz Branca 3",
+                "color": [0, 0, 0]
+            }
+        },
+        {
+            "seg_start": 610,
+            "seg_end": 636,
+            "action": {
+                "name" : "start",
+                "description": "Luz Amarela 2",
+                "color": [255, 190, 0]
+            }
+        },
+        {
+            "seg_start": 637,
+            "seg_end": 637,
+            "action": {
+                "name" : "stop",
+                "description": "STOP Luz Amarela 2",
+                "color": [0, 0, 0]
+            }
+        },
+        {
+            "seg_start": 638,
+            "seg_end": 723,
+            "action": {
+                "name" : "start",
+                "description": "Luz Branca 4",
+                "color": [255, 255, 255]
+            }
+        },
+        {
+            "seg_start": 724,
+            "seg_end": 724,
+            "action": {
+                "name" : "stop",
+                "description": "STOP Luz Branca 4",
+                "color": [0, 0, 0]
+            }
+        },
+        {
+            "seg_start": 725,
+            "seg_end": 737,
+            "action": {
+                "name" : "start",
+                "description": "Luz Azul 2",
+                "color": [0, 0, 255]
+            }
+        },
+        {
+            "seg_start": 738,
+            "seg_end": 738,
+            "action": {
+                "name" : "stop",
+                "description": "STOP Luz Azul 2",
+                "color": [0, 0, 0]
+            }
+        },
+        {
+            "seg_start": 739,
+            "seg_end": 775,
+            "action": {
+                "name" : "start",
+                "description": "Luz Branca 4",
+                "color": [255, 255, 255]
+            }
+        },
+        {
+            "seg_start": 776,
+            "seg_end": 776,
+            "action": {
+                "name" : "stop",
+                "description": "STOP Luz Branca 5",
+                "color": [0, 0, 0]
+            }
+        },
+        {
+            "seg_start": 777,
+            "seg_end": 786,
+            "action": {
+                "name" : "start",
+                "description": "Luz Azul 3",
+                "color": [0, 0, 255]
+            }
+        },
+        {
+            "seg_start": 787,
+            "seg_end": 787,
+            "action": {
+                "name" : "stop",
+                "description": "STOP Luz Azul 3",
+                "color": [0, 0, 0]
+            }
+        },
+        {
+            "seg_start": 788,
+            "seg_end": 892,
+            "action": {
+                "name" : "start",
+                "description": "Luz Branca 6",
+                "color": [255, 255, 255]
+            }
+        },
+        {
+            "seg_start": 893,
+            "seg_end": 893,
+            "action": {
+                "name" : "stop",
+                "description": "STOP Luz Branca 6",
+                "color": [0, 0, 0]
+            }
+        },
+        {
+            "seg_start": 894,
+            "seg_end": 912,
+            "action": {
+                "name" : "stop",
+                "description": "Tudo apagado 2",
+                "color": [0, 0, 0]
+            }
+        },
+        {
+            "seg_start": 913,
+            "seg_end": 927,
+            "action": {
+                "name" : "start",
+                "description": "Luz Branca 7",
+                "color": [255, 255, 255]
+            }
+        },
+        {
+            "seg_start": 928,
+            "seg_end": 928,
+            "action": {
+                "name" : "stop",
+                "description": "STOP Luz Branca 7 (final do loop)",
+                "color": [0, 0, 0]
+            }
+        }
+    ]
+}

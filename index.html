@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<title>DASH Event Listener</title>
+
+<script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script>
+
+<style>
+    body {
+        margin: 0;
+        background: #111;
+        color: white;
+        font-family: Arial, sans-serif;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+    }
+
+    video {
+        width: 900px;
+        max-width: 95vw;
+        border-radius: 12px;
+        overflow: hidden;
+        background: black;
+    }
+
+    #eventBox {
+        margin-top: 20px;
+        min-width: 400px;
+        min-height: 80px;
+        background: rgba(255,255,255,0.08);
+        border: 1px solid rgba(255,255,255,0.2);
+        border-radius: 12px;
+        padding: 20px;
+        transition: all .3s ease;
+    }
+
+    #eventName {
+        font-size: 28px;
+        font-weight: bold;
+    }
+
+    #eventDesc {
+        margin-top: 10px;
+        opacity: 0.8;
+    }
+
+    #log {
+        margin-top: 20px;
+        width: 900px;
+        max-width: 95vw;
+        height: 200px;
+        overflow-y: auto;
+        background: #000;
+        border-radius: 10px;
+        padding: 10px;
+        font-family: monospace;
+        font-size: 13px;
+    }
+
+    .line {
+        margin-bottom: 5px;
+    }
+</style>
+</head>
+
+<body>
+
+<video id="videoPlayer" controls muted autoplay></video>
+
+<div id="log"></div>
+<script>
+const url = "http://localhost:8083/playlist_1080p.mpd";
+
+const video = document.getElementById("videoPlayer");
+
+const player = dashjs.MediaPlayer().create();
+
+player.initialize(video, url, true);
+player.updateSettings({
+    streaming: {
+        events: {
+            eventControllerRefreshDelay: 100
+        }
+    }
+});
+
+player.on(
+    dashjs.MediaPlayer.events.STREAM_INITIALIZED,
+    () => {
+        console.log("STREAM_INITIALIZED");
+    }
+);
+
+
+player.on(
+    dashjs.MediaPlayer.events.MANIFEST_LOADED,
+    e => {
+        const streams =
+            e.data.Period?.[0]?.EventStream || [];
+            streams.forEach(stream => {
+                stream.Event?.forEach(ev => {
+                    try {
+                        const data =
+                            JSON.parse(ev.__text);
+                        console.log("EVENTO:", data);
+                        const [r, g, b] =
+                            data.color || [0,0,0];
+                        document.body.style.backgroundColor =
+                            `rgb(${r}, ${g}, ${b})`;
+                    } catch(err) {
+                        console.error(err);
+                    }
+                });
+        });
+    }
+);
+
+setInterval(() => {
+    console.log(
+        "currentTime",
+        video.currentTime
+    );
+}, 1000);
+
+</script>
+</body>
+</html>
