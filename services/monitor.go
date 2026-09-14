@@ -2,51 +2,113 @@ package services
 
 import (
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
-	"os"
-	"regexp"
-	"strconv"
 	"sync"
+	"time"
+
 	"tcc-teste/config"
 	"tcc-teste/models"
-	"time"
 )
 
 var (
 	Mutex *sync.RWMutex
 
-	SegmentoGlobalAtual  int
-	UltimoSegmentoFisico int
-	SegmentosPorLoop     int
+	SegmentoGlobalAtual  *int
+	UltimoSegmentoFisico *int
+	SegmentosPorLoop     *int
 
 	Events []*models.Evento
 )
 
-// ============================================================
-// CARREGA EVENTS.JSON
-// ============================================================
+// ==============================
+// Estrutura mínima do MPD
+// ==============================
 
-func ReadAndMarshalFile(path string) error {
+type MPD struct {
+	AvailabilityStartTime time.Time `xml:"availabilityStartTime,attr"`
+	Periods               []Period  `xml:"Period"`
+}
 
-	data, err := os.ReadFile(path)
+type Period struct {
+	AdaptationSets []AdaptationSet `xml:"AdaptationSet"`
+}
+
+type AdaptationSet struct {
+	Representations []Representation `xml:"Representation"`
+}
+
+type Representation struct {
+	SegmentTemplate SegmentTemplate `xml:"SegmentTemplate"`
+}
+
+type SegmentTemplate struct {
+	Timescale   int64 `xml:"timescale,attr"`
+	Duration    int64 `xml:"duration,attr"`
+	StartNumber int   `xml:"startNumber,attr"`
+}
+
+// ==============================
+// Carrega events.json remoto
+// ==============================
+
+func ReadAndMarshalFile() error {
+	fmt.Println("📥 Carregando eventos:", config.EventsJSON)
+
+	resp, err := http.Get(config.EventsJSON)
 	if err != nil {
-		return err
+		return fmt.Errorf(
+			"erro buscando events.json: %w",
+			err,
+		)
+	}
+
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf(
+			"events.json retornou HTTP %d",
+			resp.StatusCode,
+		)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf(
+			"erro lendo events.json: %w",
+			err,
+		)
 	}
 
 	var file models.EventsFile
 
 	if err := json.Unmarshal(data, &file); err != nil {
-		return err
+		return fmt.Errorf(
+			"erro fazendo parse do events.json: %w",
+			err,
+		)
 	}
 
-	SegmentosPorLoop = file.LastSeg + 1
+	if file.LastSeg == nil {
+		return fmt.Errorf(
+			"events.json não possui last_seg",
+		)
+	}
+
+	segmentosPorLoop := *file.LastSeg + 1
+
+	Mutex.Lock()
+
+	SegmentosPorLoop = &segmentosPorLoop
 
 	Events = nil
 
 	for _, item := range file.Actions {
+		if item == nil || item.Action == nil {
+			continue
+		}
 
 		Events = append(
 			Events,
@@ -60,6 +122,8 @@ func ReadAndMarshalFile(path string) error {
 		)
 	}
 
+	Mutex.Unlock()
+
 	fmt.Printf(
 		"✅ %d Events loaded\n",
 		len(Events),
@@ -67,127 +131,218 @@ func ReadAndMarshalFile(path string) error {
 
 	fmt.Printf(
 		"✅ segmentosPorLoop = %d\n",
-		SegmentosPorLoop,
+		segmentosPorLoop,
 	)
 
 	for _, ev := range Events {
+		if ev == nil {
+			continue
+		}
 
 		fmt.Printf(
 			"EVENTO | name=%s | start=%d | end=%d\n",
-			ev.Name,
-			ev.SegStart,
-			ev.SegEnd,
+			stringValue(ev.Name),
+			intValue(ev.SegStart),
+			intValue(ev.SegEnd),
 		)
 	}
 
 	return nil
 }
 
-// ============================================================
-// MONITORAMENTO DOS SEGMENTOS
-// ============================================================
-func WatchSegments() {
+// ==============================
+// Monitora o MPD remoto
+// ==============================
 
+func WatchSegments() {
 	if Mutex == nil {
 		Mutex = &sync.RWMutex{}
 	}
 
-	fmt.Println("👀 Monitorando segmentos calculados via MPD Live...")
+	fmt.Println("👀 Monitorando MPD realtime...")
+	fmt.Println("📡 MPD:", config.DashMPD)
 
-	client := http.Client{Timeout: 2 * time.Second}
-	targetURL := config.StreamBaseURL + "/playlist_1080p.mpd"
+	ultimoProcessado := -1
 
-	// Expressões para capturar os campos de tempo e duração do MPD
-	rePublish := regexp.MustCompile(`publishTime="([^"]+)"`)
-	reStart := regexp.MustCompile(`availabilityStartTime="([^"]+)"`)
-	reDuration := regexp.MustCompile(`duration="(\d+)"`)
-	reTimescale := regexp.MustCompile(`timescale="(\d+)"`)
+	for {
+		segmentoAtual, err := getCurrentSegment()
 
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	for range ticker.C {
-
-		resp, err := client.Get(targetURL)
 		if err != nil {
-			fmt.Println("❌ Erro no polling HTTP:", err)
+			fmt.Println(
+				"❌ Erro lendo MPD:",
+				err,
+			)
+
+			time.Sleep(1 * time.Second)
 			continue
 		}
-
-		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		if err != nil || resp.StatusCode != http.StatusOK {
-			continue
-		}
-
-		mpdContent := string(body)
-
-		// 1. Extrai datas do MPD
-		matchPublish := rePublish.FindStringSubmatch(mpdContent)
-		matchStart := reStart.FindStringSubmatch(mpdContent)
-		matchDuration := reDuration.FindStringSubmatch(mpdContent)
-		matchTimescale := reTimescale.FindStringSubmatch(mpdContent)
-
-		if len(matchPublish) < 2 || len(matchStart) < 2 || len(matchDuration) < 2 || len(matchTimescale) < 2 {
-			continue
-		}
-
-		// 2. Converte as datas em Time (RFC3339)
-		publishTime, err1 := time.Parse(time.RFC3339Nano, matchPublish[1])
-		startTime, err2 := time.Parse(time.RFC3339Nano, matchStart[1])
-		duration, err3 := strconv.ParseFloat(matchDuration[1], 64)
-		timescale, err4 := strconv.ParseFloat(matchTimescale[1], 64)
-
-		if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
-			fmt.Println("❌ Erro ao converter tempos do MPD")
-			continue
-		}
-
-		// 3. Calcula a duração exata do segmento em segundos
-		segmentDurationSec := duration / timescale // Ex: 2000000 / 1000000 = 2.0s
-
-		// 4. Calcula o número do segmento decorrido (começando em 1)
-		elapsedSeconds := publishTime.Sub(startTime).Seconds()
-		segmentoCalculado := int(math.Floor(elapsedSeconds/segmentDurationSec)) + 1
-
-		if segmentoCalculado <= 0 {
-			continue
-		}
-
-		Mutex.RLock()
-		jaProcessado := segmentoCalculado <= UltimoSegmentoFisico
-		Mutex.RUnlock()
-
-		if jaProcessado {
-			continue
-		}
-
-		// ==================================================
-		// NOVO SEGMENTO DETECTADO
-		// ==================================================
 
 		Mutex.Lock()
-		UltimoSegmentoFisico = segmentoCalculado
-		SegmentoGlobalAtual = segmentoCalculado
+
+		SegmentoGlobalAtual = &segmentoAtual
+		UltimoSegmentoFisico = &segmentoAtual
 
 		segmentoRelativo := 0
-		if SegmentosPorLoop > 0 {
-			segmentoRelativo = (segmentoCalculado - 1) % SegmentosPorLoop
-		} else {
-			segmentoRelativo = segmentoCalculado
+
+		if SegmentosPorLoop != nil &&
+			*SegmentosPorLoop > 0 {
+
+			segmentoRelativo =
+				(segmentoAtual - 1) %
+					*SegmentosPorLoop
+
+			if segmentoRelativo < 0 {
+				segmentoRelativo +=
+					*SegmentosPorLoop
+			}
 		}
+
 		Mutex.Unlock()
 
-		fmt.Printf("📦 Novo segmento detectado: %d | 🔁 Relativo: %d\n", segmentoCalculado, segmentoRelativo)
+		// Só gera eventos quando entrou em
+		// um novo segmento.
+		if segmentoAtual != ultimoProcessado {
+			ultimoProcessado = segmentoAtual
 
-		// ==================================================
-		// GERA/PUBLICA EVENTOS MQTT
-		// ==================================================
+			fmt.Println()
+			fmt.Println("📦 segmento global:", segmentoAtual)
+			fmt.Println(
+				"🔁 segmento relativo:",
+				segmentoRelativo,
+			)
 
-		GerarEventos(
-			segmentoCalculado,
-			segmentoRelativo,
+			fmt.Println(
+				"🎯 Verificando eventos para segmento:",
+				segmentoRelativo,
+			)
+
+			GerarEventos(
+				segmentoAtual,
+				segmentoRelativo,
+			)
+		}
+
+		time.Sleep(1 * time.Second)
+	}
+}
+
+// ==============================
+// Descobre segmento atual pelo MPD
+// ==============================
+
+func getCurrentSegment() (int, error) {
+	resp, err := http.Get(config.DashMPD)
+
+	if err != nil {
+		return 0, err
+	}
+
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf(
+			"MPD retornou HTTP %d",
+			resp.StatusCode,
 		)
 	}
+
+	data, err := io.ReadAll(resp.Body)
+
+	if err != nil {
+		return 0, err
+	}
+
+	var mpd MPD
+
+	if err := xml.Unmarshal(data, &mpd); err != nil {
+		return 0, fmt.Errorf(
+			"erro parseando MPD: %w",
+			err,
+		)
+	}
+
+	if mpd.AvailabilityStartTime.IsZero() {
+		return 0, fmt.Errorf(
+			"MPD não possui availabilityStartTime",
+		)
+	}
+
+	var template *SegmentTemplate
+
+	for _, period := range mpd.Periods {
+		for _, adaptation := range period.AdaptationSets {
+
+			if len(adaptation.Representations) == 0 {
+				continue
+			}
+
+			t := &adaptation.Representations[0].SegmentTemplate
+
+			if t.Timescale > 0 &&
+				t.Duration > 0 {
+
+				template = t
+				break
+			}
+		}
+
+		if template != nil {
+			break
+		}
+	}
+
+	if template == nil {
+		return 0, fmt.Errorf(
+			"SegmentTemplate não encontrado no MPD",
+		)
+	}
+
+	segmentDuration := time.Duration(
+		float64(template.Duration) /
+			float64(template.Timescale) *
+			float64(time.Second),
+	)
+
+	if segmentDuration <= 0 {
+		return 0, fmt.Errorf(
+			"duração de segmento inválida",
+		)
+	}
+
+	elapsed := time.Since(
+		mpd.AvailabilityStartTime,
+	)
+
+	if elapsed < 0 {
+		return template.StartNumber, nil
+	}
+
+	segmentOffset :=
+		int(elapsed / segmentDuration)
+
+	currentSegment :=
+		template.StartNumber +
+			segmentOffset
+
+	return currentSegment, nil
+}
+
+// ==============================
+// Helpers
+// ==============================
+
+func stringValue(v *string) string {
+	if v == nil {
+		return ""
+	}
+
+	return *v
+}
+
+func intValue(v *int) int {
+	if v == nil {
+		return 0
+	}
+
+	return *v
 }

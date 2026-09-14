@@ -2,15 +2,12 @@ package services
 
 import (
 	"encoding/json"
-	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"sync"
+
 	"tcc-teste/config"
-	"tcc-teste/models"
-	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
@@ -18,370 +15,273 @@ import (
 var (
 	mqttClient mqtt.Client
 
-	publishedEvents      = make(map[string]bool)
-	publishedEventsMutex = &sync.Mutex{}
+	publishedEvents = make(map[string]bool)
+
+	publishedMutex sync.Mutex
 )
 
-// ============================================================
+// ==============================
 // MQTT
-// ============================================================
+// ==============================
 
 func InitMQTT() error {
 	opts := mqtt.NewClientOptions()
 
 	opts.AddBroker(config.MQTTBroker)
-	opts.SetClientID("tcc-teste-event-publisher")
+
+	opts.SetClientID(
+		"tcc-teste-event-publisher",
+	)
+
 	opts.SetAutoReconnect(true)
-	opts.SetCleanSession(false)
+	opts.SetConnectRetry(true)
 
-	client := mqtt.NewClient(opts)
+	mqttClient = mqtt.NewClient(opts)
 
-	token := client.Connect()
+	token := mqttClient.Connect()
 
 	if token.Wait() && token.Error() != nil {
 		return token.Error()
 	}
 
-	mqttClient = client
-
-	fmt.Println("=================================")
-	fmt.Println("✅ MQTT conectado")
-	fmt.Println("Broker:", config.MQTTBroker)
-	fmt.Println("Topic:", config.MQTTTopic)
-	fmt.Println("=================================")
+	fmt.Println(
+		"✅ MQTT conectado:",
+		config.MQTTBroker,
+	)
 
 	return nil
 }
 
-// ============================================================
-// PUBLICAÇÃO MQTT
-// ============================================================
+// ==============================
+// Publica evento MQTT
+// ==============================
 
-func publishEventMQTT(eventID string, payload []byte) {
+func publishEventMQTT(
+	eventType string,
+	name string,
+	description string,
+	color []*int,
+) {
+	payload := map[string]interface{}{
+		"type":        eventType,
+		"name":        name,
+		"description": description,
+		"color":       color,
+	}
 
-	fmt.Println("📤 TENTANDO PUBLICAR MQTT")
-	fmt.Println("   ID:", eventID)
-	fmt.Println("   Topic:", config.MQTTTopic)
-	fmt.Println("   Payload:", string(payload))
+	data, err := json.Marshal(payload)
 
-	if mqttClient == nil {
-		fmt.Println("❌ mqttClient é nil")
+	if err != nil {
+		fmt.Println(
+			"❌ Erro criando JSON MQTT:",
+			err,
+		)
+
 		return
 	}
 
-	if !mqttClient.IsConnected() {
-		fmt.Println("❌ MQTT não está conectado")
-		return
-	}
-
-	publishedEventsMutex.Lock()
-	defer publishedEventsMutex.Unlock()
-
-	// Evita publicar o mesmo evento duas vezes.
-	if publishedEvents[eventID] {
-		fmt.Println("⚠️ Evento já publicado:", eventID)
-		return
-	}
+	fmt.Println(
+		"📤 MQTT:",
+		string(data),
+	)
 
 	token := mqttClient.Publish(
 		config.MQTTTopic,
-		1,     // QoS
-		false, // retain
-		payload,
+		1,
+		false,
+		data,
 	)
 
-	token.Wait()
-
-	if token.Error() != nil {
-		fmt.Println("❌ Erro publicando evento MQTT:", token.Error())
-		return
+	if token.Wait() && token.Error() != nil {
+		fmt.Println(
+			"❌ Erro publicando MQTT:",
+			token.Error(),
+		)
 	}
-
-	// Só marca depois que o Publish realmente funcionou.
-	publishedEvents[eventID] = true
-
-	fmt.Println("📡 EVENTO MQTT PUBLICADO")
-	fmt.Println("   ID:", eventID)
-	fmt.Println("   Topic:", config.MQTTTopic)
-	fmt.Println("   Payload:", string(payload))
 }
 
-// ============================================================
-// HANDLE MPD
-// ============================================================
-// ============================================================
-// HANDLE MPD VIA HTTP REMOTE
-// ============================================================
+// ==============================
+// Proxy do MPD remoto
+// ==============================
 
-func HandleMPD(w http.ResponseWriter, r *http.Request) {
+func HandleMPD(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	fmt.Println(
+		"📡 Proxy MPD:",
+		config.DashMPD,
+	)
 
-	fmt.Println("🔥 MPD REQUEST:", r.URL.Path)
+	resp, err := http.Get(config.DashMPD)
 
-	// Monta a URL completa apontando para o servidor 8081
-	targetURL := config.StreamBaseURL + r.URL.Path
-
-	// Realiza a requisição HTTP GET para buscar o MPD
-	client := http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get(targetURL)
 	if err != nil {
-		fmt.Println("❌ Erro ao buscar MPD remoto:", err)
-		http.Error(w, "Erro ao conectar no servidor DASH", http.StatusBadGateway)
+		http.Error(
+			w,
+			"erro buscando MPD remoto",
+			http.StatusBadGateway,
+		)
+
 		return
 	}
+
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		fmt.Printf("❌ Servidor remoto retornou status %d\n", resp.StatusCode)
-		http.Error(w, "MPD remoto não encontrado", resp.StatusCode)
-		return
-	}
-
-	// Lê o corpo da resposta
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		http.Error(w, "Erro ao ler resposta do MPD", http.StatusInternalServerError)
-		return
-	}
-
-	mpd := string(data)
-
-	// ----------------------------------------------------------
-	// Descobre o segmento atual
-	// ----------------------------------------------------------
-
-	Mutex.RLock()
-	segmentoGlobal := SegmentoGlobalAtual
-	Mutex.RUnlock()
-
-	if segmentoGlobal == 0 {
-		segmentoGlobal = 1
-	}
-
-	if SegmentosPorLoop <= 0 {
-		fmt.Println("❌ SegmentosPorLoop inválido:", SegmentosPorLoop)
 		http.Error(
 			w,
-			"SegmentosPorLoop inválido",
-			http.StatusInternalServerError,
+			fmt.Sprintf(
+				"MPD retornou HTTP %d",
+				resp.StatusCode,
+			),
+			http.StatusBadGateway,
 		)
+
 		return
 	}
 
-	segmentoRelativo := (segmentoGlobal - 1) % SegmentosPorLoop
+	contentType :=
+		resp.Header.Get("Content-Type")
 
-	fmt.Println(
-		"➡️ MPD REQUEST | global:",
-		segmentoGlobal,
-		"| relativo:",
-		segmentoRelativo,
-	)
-
-	// ==========================================================
-	// EVENTOS MQTT
-	// ==========================================================
-
-	GerarEventos(segmentoGlobal, segmentoRelativo)
-
-	// Atualiza publishTime.
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	rePublish := regexp.MustCompile(`publishTime="[^"]+"`)
-	mpd = rePublish.ReplaceAllString(
-		mpd,
-		`publishTime="`+now+`"`,
-	)
-
-	// Atualiza minimumUpdatePeriod.
-	reMUP := regexp.MustCompile(`minimumUpdatePeriod="[^"]+"`)
-	mpd = reMUP.ReplaceAllString(
-		mpd,
-		`minimumUpdatePeriod="PT1S"`,
-	)
-
-	fmt.Println("========== MPD ENVIADO ==========")
-	fmt.Println(mpd)
-	fmt.Println("=================================")
+	if contentType == "" {
+		contentType =
+			"application/dash+xml"
+	}
 
 	w.Header().Set(
 		"Content-Type",
-		"application/dash+xml",
+		contentType,
 	)
 
-	_, _ = w.Write([]byte(mpd))
+	w.Header().Set(
+		"Cache-Control",
+		"no-cache, no-store, must-revalidate",
+	)
+
+	w.Header().Set(
+		"Pragma",
+		"no-cache",
+	)
+
+	w.Header().Set(
+		"Expires",
+		"0",
+	)
+
+	if _, err := io.Copy(
+		w,
+		resp.Body,
+	); err != nil {
+		fmt.Println(
+			"❌ Erro enviando MPD:",
+			err,
+		)
+	}
 }
 
-// ============================================================
-// GERA EVENTOS
-// ============================================================
+// ==============================
+// Gera eventos
+// ==============================
 
 func GerarEventos(
 	segmentoGlobal int,
 	segmentoRelativo int,
-) string {
+) {
+	Mutex.RLock()
 
-	fmt.Println("=================================")
-	fmt.Println("🔎 VERIFICANDO EVENTOS")
-	fmt.Println("   global:", segmentoGlobal)
-	fmt.Println("   relativo:", segmentoRelativo)
-	fmt.Println("   total:", len(Events))
-	fmt.Println("=================================")
+	events := Events
 
-	// ==========================================================
-	// EVENTSTREAM ANTIGO
-	// ==========================================================
+	Mutex.RUnlock()
 
-	stream := models.EventStream{
-		XMLName:   xml.Name{Local: "EventStream"},
-		SchemeID:  config.EventScheme,
-		Value:     config.EventValue,
-		Timescale: 1000000,
-	}
+	for _, ev := range events {
+		if ev == nil {
+			continue
+		}
 
-	for _, ev := range Events {
+		start := intValue(ev.SegStart)
+		end := intValue(ev.SegEnd)
 
-		// ======================================================
-		// EVENTO START
-		// ======================================================
+		name := stringValue(ev.Name)
+		desc := stringValue(ev.Desc)
 
-		if segmentoRelativo == ev.SegStart {
+		fmt.Printf(
+			"🔎 evento=%s | start=%d | end=%d | atual=%d\n",
+			name,
+			start,
+			end,
+			segmentoRelativo,
+		)
 
-			payload, err := json.Marshal(map[string]any{
-				"type":        "start",
-				"name":        ev.Name,
-				"description": ev.Desc,
-				"color":       ev.Color,
-			})
-
-			if err != nil {
-				fmt.Println(
-					"❌ Erro criando payload START:",
-					err,
-				)
-				continue
-			}
-
-			fmt.Println("🚀 ENCONTROU START:", ev.Name)
-
+		// START
+		if segmentoRelativo == start {
 			eventID := fmt.Sprintf(
 				"%s_start_loop_%d",
-				ev.Name,
+				name,
 				segmentoGlobal,
 			)
 
-			publishEventMQTT(
+			publishOnce(
 				eventID,
-				payload,
-			)
-
-			// --------------------------------------------------
-			// PARTE ANTIGA — EVENTSTREAM XML
-			// --------------------------------------------------
-
-			stream.EventItems = append(
-				stream.EventItems,
-				models.Event{
-					XMLName: xml.Name{
-						Local: "Event",
-					},
-
-					PresentationTime: int64(
-						segmentoGlobal-1,
-					) * config.SegmentDurationUs,
-
-					Duration: config.SegmentDurationUs,
-
-					ID: fmt.Sprintf(
-						"%s_start_loop",
-						ev.Name,
-					),
-
-					Data: string(payload),
-				},
+				"start",
+				name,
+				desc,
+				ev.Color,
 			)
 		}
 
-		// ======================================================
-		// EVENTO END
-		// ======================================================
-
-		if segmentoRelativo == ev.SegEnd {
-
-			payload, err := json.Marshal(map[string]any{
-				"type":        "end",
-				"name":        ev.Name,
-				"description": ev.Desc,
-				"color":       ev.Color,
-			})
-
-			if err != nil {
-				fmt.Println(
-					"❌ Erro criando payload END:",
-					err,
-				)
-				continue
-			}
-
-			fmt.Println("🛑 ENCONTROU END:", ev.Name)
-
+		// END
+		if segmentoRelativo == end {
 			eventID := fmt.Sprintf(
 				"%s_end_loop_%d",
-				ev.Name,
+				name,
 				segmentoGlobal,
 			)
 
-			publishEventMQTT(
+			publishOnce(
 				eventID,
-				payload,
-			)
-
-			// --------------------------------------------------
-			// PARTE ANTIGA — EVENTSTREAM XML
-			// --------------------------------------------------
-
-			stream.EventItems = append(
-				stream.EventItems,
-				models.Event{
-					XMLName: xml.Name{
-						Local: "Event",
-					},
-
-					PresentationTime: int64(
-						segmentoGlobal-1,
-					) * config.SegmentDurationUs,
-
-					Duration: config.SegmentDurationUs,
-
-					ID: fmt.Sprintf(
-						"%s_end_loop",
-						ev.Name,
-					),
-
-					Data: string(payload),
-				},
+				"end",
+				name,
+				desc,
+				ev.Color,
 			)
 		}
 	}
+}
 
-	if len(stream.EventItems) == 0 {
-		fmt.Println("ℹ️ Nenhum evento neste segmento")
-		fmt.Println("=================================")
-		return ""
+// ==============================
+// Evita publicação duplicada
+// ==============================
+
+func publishOnce(
+	eventID string,
+	eventType string,
+	name string,
+	description string,
+	color []*int,
+) {
+	publishedMutex.Lock()
+
+	if publishedEvents[eventID] {
+		publishedMutex.Unlock()
+
+		return
 	}
 
-	output, err := xml.MarshalIndent(
-		stream,
-		"    ",
-		"    ",
+	publishedEvents[eventID] = true
+
+	publishedMutex.Unlock()
+
+	fmt.Printf(
+		"🚀 EVENTO %s | %s | segmento=%s\n",
+		eventType,
+		name,
+		eventID,
 	)
 
-	if err != nil {
-		fmt.Println(
-			"❌ Erro serializando EventStream:",
-			err,
-		)
-		return ""
-	}
-
-	fmt.Println("=================================")
-
-	return string(output)
+	publishEventMQTT(
+		eventType,
+		name,
+		description,
+		color,
+	)
 }

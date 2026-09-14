@@ -5,53 +5,34 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+
 	"tcc-teste/config"
 	"tcc-teste/services"
 )
 
 func main() {
-
-	/*
-		===========================================================
-		ORDEM 0: Inicializa estado compartilhado
-		===========================================================
-	*/
+	// ==============================
+	// Inicialização
+	// ==============================
 
 	services.Mutex = &sync.RWMutex{}
 
-	/*
-		===========================================================
-		ORDEM 1: Conecta no MQTT
-		===========================================================
-	*/
-
+	// MQTT
 	if err := services.InitMQTT(); err != nil {
 		panic(err)
 	}
 
-	/*
-		===========================================================
-		ORDEM 2: Carrega os metadados do JSON de eventos
-		===========================================================
-	*/
-
-	if err := services.ReadAndMarshalFile("./events.json"); err != nil {
+	// Eventos vêm do servidor 8081
+	if err := services.ReadAndMarshalFile(); err != nil {
 		panic(err)
 	}
 
-	/*
-		===========================================================
-		ORDEM 3: Monitora os segmentos físicos
-		===========================================================
-	*/
-
+	// Monitor do MPD remoto
 	go services.WatchSegments()
 
-	/*
-		===========================================================
-		ORDEM 4: Servidor HTTP
-		===========================================================
-	*/
+	// ==============================
+	// Servidor HTTP
+	// ==============================
 
 	fs := http.FileServer(
 		http.Dir(config.Directory),
@@ -60,8 +41,10 @@ func main() {
 	http.Handle(
 		"/",
 		http.HandlerFunc(
-			func(w http.ResponseWriter, r *http.Request) {
-
+			func(
+				w http.ResponseWriter,
+				r *http.Request,
+			) {
 				w.Header().Set(
 					"Access-Control-Allow-Origin",
 					"*",
@@ -82,43 +65,53 @@ func main() {
 					"0",
 				)
 
-				/*
-					Se a requisição pedir o manifesto,
-					envia para tratamento dinâmico.
-				*/
-
+				// MPD é obtido do servidor 8081
 				if strings.HasSuffix(
 					r.URL.Path,
 					".mpd",
 				) {
-
-					services.HandleMPD(w, r)
+					services.HandleMPD(
+						w,
+						r,
+					)
 
 					return
 				}
 
-				fs.ServeHTTP(w, r)
+				// Demais arquivos continuam
+				// sendo servidos normalmente.
+				fs.ServeHTTP(
+					w,
+					r,
+				)
 			},
 		),
 	)
 
-	fmt.Printf(
-		"🚀 Servidor DASH rodando em http://localhost%s\n",
+	fmt.Println(
+		"🚀 Servidor rodando em",
 		config.Porta,
 	)
 
-	/*
-		===========================================================
-		ORDEM 5: Abre servidor
-		===========================================================
-	*/
+	fmt.Println(
+		"📡 MPD:",
+		config.DashMPD,
+	)
 
-	err := http.ListenAndServe(
+	fmt.Println(
+		"📋 Eventos:",
+		config.EventsJSON,
+	)
+
+	fmt.Println(
+		"📤 MQTT:",
+		config.MQTTTopic,
+	)
+
+	if err := http.ListenAndServe(
 		config.Porta,
 		nil,
-	)
-
-	if err != nil {
+	); err != nil {
 		panic(err)
 	}
 }
