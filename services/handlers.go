@@ -67,13 +67,14 @@ func publishEventMQTT(
 		"name":        name,
 		"description": description,
 		"color":       color,
+		"app":         AppAtual,
 	}
 
 	data, err := json.Marshal(payload)
 
 	if err != nil {
 		fmt.Println(
-			"❌ Erro criando JSON MQTT:",
+			"Erro criando JSON MQTT:",
 			err,
 		)
 
@@ -94,7 +95,7 @@ func publishEventMQTT(
 
 	if token.Wait() && token.Error() != nil {
 		fmt.Println(
-			"❌ Erro publicando MQTT:",
+			"Erro publicando MQTT:",
 			token.Error(),
 		)
 	}
@@ -173,7 +174,7 @@ func HandleMPD(
 		resp.Body,
 	); err != nil {
 		fmt.Println(
-			"❌ Erro enviando MPD:",
+			"Erro enviando MPD:",
 			err,
 		)
 	}
@@ -272,7 +273,7 @@ func publishOnce(
 	publishedMutex.Unlock()
 
 	fmt.Printf(
-		"🚀 EVENTO %s | %s | segmento=%s\n",
+		"EVENTO %s | %s | segmento=%s\n",
 		eventType,
 		name,
 		eventID,

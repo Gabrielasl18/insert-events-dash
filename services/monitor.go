@@ -20,7 +20,8 @@ var (
 	UltimoSegmentoFisico *int
 	SegmentosPorLoop     *int
 
-	Events []*models.Evento
+	AppAtual string
+	Events   []*models.Evento
 )
 
 // ==============================
@@ -103,6 +104,13 @@ func ReadAndMarshalFile() error {
 
 	SegmentosPorLoop = &segmentosPorLoop
 
+	// Armazena o aplicativo lido do JSON (Ex: "CEFET/RJ TV")
+	if file.App != nil {
+		AppAtual = *file.App // Desreferencia o ponteiro para pegar o valor string
+	} else {
+		AppAtual = ""
+	}
+
 	Events = nil
 
 	for _, item := range file.Actions {
@@ -125,6 +133,11 @@ func ReadAndMarshalFile() error {
 	Mutex.Unlock()
 
 	fmt.Printf(
+		"✅ App carregado: %s\n",
+		AppAtual,
+	)
+
+	fmt.Printf(
 		"✅ %d Events loaded\n",
 		len(Events),
 	)
@@ -138,13 +151,6 @@ func ReadAndMarshalFile() error {
 		if ev == nil {
 			continue
 		}
-
-		fmt.Printf(
-			"EVENTO | name=%s | start=%d | end=%d\n",
-			stringValue(ev.Name),
-			intValue(ev.SegStart),
-			intValue(ev.SegEnd),
-		)
 	}
 
 	return nil
@@ -199,8 +205,7 @@ func WatchSegments() {
 
 		Mutex.Unlock()
 
-		// Só gera eventos quando entrou em
-		// um novo segmento.
+		// Só gera eventos quando entrou em um novo segmento.
 		if segmentoAtual != ultimoProcessado {
 			ultimoProcessado = segmentoAtual
 

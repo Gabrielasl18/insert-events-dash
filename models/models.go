@@ -25,6 +25,7 @@ type EventJSON struct {
 type EventsFile struct {
 	LastSeg *int         `json:"last_seg"`
 	Actions []*EventJSON `json:"actions"`
+	App     *string      `json:"app"`
 }
 
 type Event struct {
