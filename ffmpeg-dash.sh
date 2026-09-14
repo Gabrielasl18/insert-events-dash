@@ -1,6 +1,6 @@
 #!/bin/bash
 
-INPUT_FILE="./novela.mp4"
+INPUT_FILE="./segment_001.mp4"
 OUTPUT_DIR="./dash"
 MPD_NAME="playlist_1080p.mpd"
 
@@ -11,7 +11,7 @@ rm -f "$OUTPUT_DIR"/*
 ffmpeg \
 -re \
 -stream_loop -1 \
--i novela.mp4 \
+-i segment_001.mp4 \
 -map 0:v:0 \
 -map 0:a:0 \
 -c:v libx264 \
