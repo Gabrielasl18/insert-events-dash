@@ -2,6 +2,7 @@ package config
 
 const (
 	Directory         = "./dash"
+	StreamBaseURL     = "http://localhost:8081/live/dash"
 	Porta             = ":8083"
 	SegmentDurationUs = 2000000
 

@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"net/http"
-	"os"
 	"regexp"
 	"sync"
 	"tcc-teste/config"
@@ -109,16 +109,37 @@ func publishEventMQTT(eventID string, payload []byte) {
 // ============================================================
 // HANDLE MPD
 // ============================================================
+// ============================================================
+// HANDLE MPD VIA HTTP REMOTE
+// ============================================================
 
 func HandleMPD(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Println("🔥 MPD REQUEST:", r.URL.Path)
 
-	path := config.Directory + r.URL.Path
+	// Monta a URL completa apontando para o servidor 8081
+	targetURL := config.StreamBaseURL + r.URL.Path
 
-	data, err := os.ReadFile(path)
+	// Realiza a requisição HTTP GET para buscar o MPD
+	client := http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(targetURL)
 	if err != nil {
-		http.Error(w, "MPD não encontrado", http.StatusNotFound)
+		fmt.Println("❌ Erro ao buscar MPD remoto:", err)
+		http.Error(w, "Erro ao conectar no servidor DASH", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		fmt.Printf("❌ Servidor remoto retornou status %d\n", resp.StatusCode)
+		http.Error(w, "MPD remoto não encontrado", resp.StatusCode)
+		return
+	}
+
+	// Lê o corpo da resposta
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		http.Error(w, "Erro ao ler resposta do MPD", http.StatusInternalServerError)
 		return
 	}
 
@@ -129,9 +150,7 @@ func HandleMPD(w http.ResponseWriter, r *http.Request) {
 	// ----------------------------------------------------------
 
 	Mutex.RLock()
-
 	segmentoGlobal := SegmentoGlobalAtual
-
 	Mutex.RUnlock()
 
 	if segmentoGlobal == 0 {
@@ -163,42 +182,9 @@ func HandleMPD(w http.ResponseWriter, r *http.Request) {
 
 	GerarEventos(segmentoGlobal, segmentoRelativo)
 
-	// ==========================================================
-	// PARTE ANTIGA — INJEÇÃO DO EVENTSTREAM NO MPD
-	// ==========================================================
-	//
-	// Mantida comentada.
-	//
-	// eventsXML := GerarEventos(...)
-	//
-	// if eventsXML != "" {
-	//     mpd = strings.Replace(
-	//         mpd,
-	//         "</Period>",
-	//         "\n"+eventsXML+"\n</Period>",
-	//         1,
-	//     )
-	//
-	//     pathModify := config.Directory + "/modify" + r.URL.Path
-	//
-	//     err := os.WriteFile(
-	//         pathModify,
-	//         []byte(mpd),
-	//         0644,
-	//     )
-	//
-	//     if err != nil {
-	//         fmt.Println("erro salvando MPD:", err)
-	//     }
-	// }
-	//
-	// ==========================================================
-
 	// Atualiza publishTime.
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-
 	rePublish := regexp.MustCompile(`publishTime="[^"]+"`)
-
 	mpd = rePublish.ReplaceAllString(
 		mpd,
 		`publishTime="`+now+`"`,
@@ -206,7 +192,6 @@ func HandleMPD(w http.ResponseWriter, r *http.Request) {
 
 	// Atualiza minimumUpdatePeriod.
 	reMUP := regexp.MustCompile(`minimumUpdatePeriod="[^"]+"`)
-
 	mpd = reMUP.ReplaceAllString(
 		mpd,
 		`minimumUpdatePeriod="PT1S"`,
@@ -252,14 +237,6 @@ func GerarEventos(
 	}
 
 	for _, ev := range Events {
-
-		fmt.Printf(
-			"🔎 evento=%s | start=%d | end=%d | atual=%d\n",
-			ev.Name,
-			ev.SegStart,
-			ev.SegEnd,
-			segmentoRelativo,
-		)
 
 		// ======================================================
 		// EVENTO START
@@ -383,10 +360,6 @@ func GerarEventos(
 			)
 		}
 	}
-
-	// ==========================================================
-	// PARTE ANTIGA — SERIALIZAÇÃO XML
-	// ==========================================================
 
 	if len(stream.EventItems) == 0 {
 		fmt.Println("ℹ️ Nenhum evento neste segmento")

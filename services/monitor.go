@@ -3,16 +3,16 @@ package services
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"math"
+	"net/http"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
-	"strings"
 	"sync"
 	"tcc-teste/config"
 	"tcc-teste/models"
-
-	"github.com/fsnotify/fsnotify"
+	"time"
 )
 
 var (
@@ -86,139 +86,108 @@ func ReadAndMarshalFile(path string) error {
 // ============================================================
 // MONITORAMENTO DOS SEGMENTOS
 // ============================================================
-
 func WatchSegments() {
 
 	if Mutex == nil {
 		Mutex = &sync.RWMutex{}
 	}
 
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		panic(err)
-	}
+	fmt.Println("👀 Monitorando segmentos calculados via MPD Live...")
 
-	defer watcher.Close()
+	client := http.Client{Timeout: 2 * time.Second}
+	targetURL := config.StreamBaseURL + "/playlist_1080p.mpd"
 
-	if err := watcher.Add(config.Directory); err != nil {
-		panic(err)
-	}
+	// Expressões para capturar os campos de tempo e duração do MPD
+	rePublish := regexp.MustCompile(`publishTime="([^"]+)"`)
+	reStart := regexp.MustCompile(`availabilityStartTime="([^"]+)"`)
+	reDuration := regexp.MustCompile(`duration="(\d+)"`)
+	reTimescale := regexp.MustCompile(`timescale="(\d+)"`)
 
-	// Detecta:
-	//
-	// chunk-stream0-00001.m4s
-	// chunk-stream0-00002.m4s
-	// chunk-stream0-00003.m4s
-	//
-	// Ignora:
-	//
-	// chunk-stream1-xxxxx.m4s
-	// *.tmp
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
 
-	re := regexp.MustCompile(
-		`^chunk-stream0-0*(\d+)\.m4s$`,
-	)
+	for range ticker.C {
 
-	fmt.Println(
-		"👀 Monitorando segmentos realtime...",
-	)
-
-	for {
-
-		select {
-
-		case event, ok := <-watcher.Events:
-
-			if !ok {
-				return
-			}
-
-			if event.Op&fsnotify.Create != fsnotify.Create &&
-				event.Op&fsnotify.Rename != fsnotify.Rename {
-				continue
-			}
-
-			name := filepath.Base(event.Name)
-
-			fmt.Println("📄 arquivo:", name)
-
-			// Ignora temporários.
-			if strings.HasSuffix(name, ".tmp") {
-				continue
-			}
-
-			match := re.FindStringSubmatch(name)
-
-			fmt.Println("🔎 match:", match)
-
-			if len(match) < 2 {
-				continue
-			}
-
-			segmentoFisico, err := strconv.Atoi(match[1])
-
-			if err != nil {
-				fmt.Println(
-					"❌ Erro convertendo segmento:",
-					err,
-				)
-				continue
-			}
-
-			// ==================================================
-			// ATUALIZA SEGMENTO
-			// ==================================================
-
-			Mutex.Lock()
-
-			UltimoSegmentoFisico = segmentoFisico
-			SegmentoGlobalAtual = segmentoFisico
-
-			segmentoRelativo := 0
-
-			if SegmentosPorLoop > 0 {
-
-				segmentoRelativo =
-					(segmentoFisico - 1) %
-						SegmentosPorLoop
-			}
-
-			Mutex.Unlock()
-
-			fmt.Println(
-				"📦 segmento físico:",
-				segmentoFisico,
-			)
-
-			fmt.Println(
-				"🔁 segmento relativo:",
-				segmentoRelativo,
-			)
-
-			// ==================================================
-			// GERA/PUBLICA EVENTOS
-			// ==================================================
-
-			fmt.Println(
-				"🎯 Verificando eventos para segmento:",
-				segmentoRelativo,
-			)
-
-			GerarEventos(
-				segmentoFisico,
-				segmentoRelativo,
-			)
-
-		case err, ok := <-watcher.Errors:
-
-			if !ok {
-				return
-			}
-
-			fmt.Println(
-				"❌ watch error:",
-				err,
-			)
+		resp, err := client.Get(targetURL)
+		if err != nil {
+			fmt.Println("❌ Erro no polling HTTP:", err)
+			continue
 		}
+
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if err != nil || resp.StatusCode != http.StatusOK {
+			continue
+		}
+
+		mpdContent := string(body)
+
+		// 1. Extrai datas do MPD
+		matchPublish := rePublish.FindStringSubmatch(mpdContent)
+		matchStart := reStart.FindStringSubmatch(mpdContent)
+		matchDuration := reDuration.FindStringSubmatch(mpdContent)
+		matchTimescale := reTimescale.FindStringSubmatch(mpdContent)
+
+		if len(matchPublish) < 2 || len(matchStart) < 2 || len(matchDuration) < 2 || len(matchTimescale) < 2 {
+			continue
+		}
+
+		// 2. Converte as datas em Time (RFC3339)
+		publishTime, err1 := time.Parse(time.RFC3339Nano, matchPublish[1])
+		startTime, err2 := time.Parse(time.RFC3339Nano, matchStart[1])
+		duration, err3 := strconv.ParseFloat(matchDuration[1], 64)
+		timescale, err4 := strconv.ParseFloat(matchTimescale[1], 64)
+
+		if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
+			fmt.Println("❌ Erro ao converter tempos do MPD")
+			continue
+		}
+
+		// 3. Calcula a duração exata do segmento em segundos
+		segmentDurationSec := duration / timescale // Ex: 2000000 / 1000000 = 2.0s
+
+		// 4. Calcula o número do segmento decorrido (começando em 1)
+		elapsedSeconds := publishTime.Sub(startTime).Seconds()
+		segmentoCalculado := int(math.Floor(elapsedSeconds/segmentDurationSec)) + 1
+
+		if segmentoCalculado <= 0 {
+			continue
+		}
+
+		Mutex.RLock()
+		jaProcessado := segmentoCalculado <= UltimoSegmentoFisico
+		Mutex.RUnlock()
+
+		if jaProcessado {
+			continue
+		}
+
+		// ==================================================
+		// NOVO SEGMENTO DETECTADO
+		// ==================================================
+
+		Mutex.Lock()
+		UltimoSegmentoFisico = segmentoCalculado
+		SegmentoGlobalAtual = segmentoCalculado
+
+		segmentoRelativo := 0
+		if SegmentosPorLoop > 0 {
+			segmentoRelativo = (segmentoCalculado - 1) % SegmentosPorLoop
+		} else {
+			segmentoRelativo = segmentoCalculado
+		}
+		Mutex.Unlock()
+
+		fmt.Printf("📦 Novo segmento detectado: %d | 🔁 Relativo: %d\n", segmentoCalculado, segmentoRelativo)
+
+		// ==================================================
+		// GERA/PUBLICA EVENTOS MQTT
+		// ==================================================
+
+		GerarEventos(
+			segmentoCalculado,
+			segmentoRelativo,
+		)
 	}
 }
