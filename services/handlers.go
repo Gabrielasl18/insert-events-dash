@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"net/http"
-	"os"
 	"regexp"
 	"strings"
 	"tcc-teste/config"
@@ -13,134 +13,379 @@ import (
 	"time"
 )
 
+// HandleMPD busca o MPD diretamente no BcastService,
+// injeta os eventos correspondentes ao segmento atual
+// e devolve o MPD para quem fez a requisição.
 func HandleMPD(w http.ResponseWriter, r *http.Request) {
+
 	fmt.Println("🔥 MPD REQUEST:", r.URL.Path)
 
-	path := config.Directory + r.URL.Path
+	// =========================================================
+	// BUSCA O MPD NO BCAST
+	// =========================================================
 
-	data, err := os.ReadFile(path)
+	resp, err := http.Get(config.DashURL)
+
 	if err != nil {
-		http.Error(w, "MPD não encontrado", 404)
+		fmt.Println("❌ Erro buscando MPD:", err)
+
+		http.Error(
+			w,
+			"Erro ao buscar MPD",
+			http.StatusBadGateway,
+		)
+
+		return
+	}
+
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+
+		fmt.Println(
+			"❌ Bcast respondeu:",
+			resp.StatusCode,
+		)
+
+		http.Error(
+			w,
+			"MPD não encontrado",
+			resp.StatusCode,
+		)
+
+		return
+	}
+
+	// =========================================================
+	// LÊ O MPD
+	// =========================================================
+
+	data, err := io.ReadAll(resp.Body)
+
+	if err != nil {
+
+		fmt.Println(
+			"❌ Erro lendo MPD:",
+			err,
+		)
+
+		http.Error(
+			w,
+			"Erro lendo MPD",
+			http.StatusInternalServerError,
+		)
+
 		return
 	}
 
 	mpd := string(data)
 
+	// =========================================================
+	// OBTÉM O SEGMENTO ATUAL
+	// =========================================================
+
 	Mutex.RLock()
+
 	segmentoGlobal := SegmentoGlobalAtual
+
 	Mutex.RUnlock()
 
 	if segmentoGlobal == 0 {
 		segmentoGlobal = 1
 	}
 
-	segmentoRelativo := (segmentoGlobal - 1) % SegmentosPorLoop
+	if SegmentosPorLoop <= 0 {
 
-	fmt.Println("➡️ MPD REQUEST | global:", segmentoGlobal, "| relativo:", segmentoRelativo)
-
-	eventsXML := GerarEventos(segmentoGlobal, segmentoRelativo)
-
-	if eventsXML != "" {
-		mpd = strings.Replace(
-			mpd,
-			"</Period>",
-			"\n"+eventsXML+"\n</Period>",
-			1,
+		fmt.Println(
+			"⚠️ SegmentosPorLoop inválido:",
+			SegmentosPorLoop,
 		)
 
-		path_modify := config.Directory + "/modify" + r.URL.Path
+		http.Error(
+			w,
+			"SegmentosPorLoop inválido",
+			http.StatusInternalServerError,
+		)
 
-		err := os.WriteFile(path_modify, []byte(mpd), 0644)
-		if err != nil {
-			fmt.Println("erro salvando MPD:", err)
-		}
-		fmt.Println("⚡ [SUCESSO] EventStream injetado no MPD enviado!")
+		return
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	rePublish := regexp.MustCompile(`publishTime="[^"]+"`)
-	mpd = rePublish.ReplaceAllString(mpd, `publishTime="`+now+`"`)
+	segmentoRelativo :=
+		(segmentoGlobal - 1) % SegmentosPorLoop
 
-	reMUP := regexp.MustCompile(`minimumUpdatePeriod="[^"]+"`)
-	mpd = reMUP.ReplaceAllString(mpd, `minimumUpdatePeriod="PT1S"`)
+	fmt.Println(
+		"➡️ MPD REQUEST | global:",
+		segmentoGlobal,
+		"| relativo:",
+		segmentoRelativo,
+	)
 
-	fmt.Println("========== MPD ENVIADO ==========")
-	fmt.Println(mpd)
-	fmt.Println("=================================")
+	// =========================================================
+	// GERA EVENTOS
+	// =========================================================
 
-	w.Header().Set("Content-Type", "application/dash+xml")
+	eventsXML := GerarEventos(
+		segmentoGlobal,
+		segmentoRelativo,
+	)
+
+	if eventsXML != "" {
+
+		if strings.Contains(mpd, "</Period>") {
+
+			mpd = strings.Replace(
+				mpd,
+				"</Period>",
+				"\n"+eventsXML+"\n</Period>",
+				1,
+			)
+
+			fmt.Println(
+				"⚡ [SUCESSO] EventStream injetado no MPD!",
+			)
+
+		} else {
+
+			fmt.Println(
+				"❌ MPD não possui </Period>",
+			)
+		}
+	}
+
+	// =========================================================
+	// ATUALIZA PUBLISH TIME
+	// =========================================================
+
+	now := time.Now().
+		UTC().
+		Format(time.RFC3339Nano)
+
+	rePublish := regexp.MustCompile(
+		`publishTime="[^"]+"`,
+	)
+
+	mpd = rePublish.ReplaceAllString(
+		mpd,
+		`publishTime="`+now+`"`,
+	)
+
+	// =========================================================
+	// ATUALIZA MINIMUM UPDATE PERIOD
+	// =========================================================
+
+	reMUP := regexp.MustCompile(
+		`minimumUpdatePeriod="[^"]+"`,
+	)
+
+	mpd = reMUP.ReplaceAllString(
+		mpd,
+		`minimumUpdatePeriod="PT1S"`,
+	)
+
+	// =========================================================
+	// DEVOLVE O MPD
+	// =========================================================
+
+	w.Header().Set(
+		"Content-Type",
+		"application/dash+xml",
+	)
+
+	w.Header().Set(
+		"Access-Control-Allow-Origin",
+		"*",
+	)
+
+	w.Header().Set(
+		"Cache-Control",
+		"no-cache, no-store, must-revalidate",
+	)
+
+	w.Header().Set(
+		"Pragma",
+		"no-cache",
+	)
+
+	w.Header().Set(
+		"Expires",
+		"0",
+	)
+
 	_, _ = w.Write([]byte(mpd))
 }
 
-func GerarEventos(segmentoGlobal int, segmentoRelativo int) string {
+// =============================================================
+// GERA EVENTOS MPEG-DASH
+// =============================================================
+
+func GerarEventos(
+	segmentoGlobal int,
+	segmentoRelativo int,
+) string {
+
 	stream := models.EventStream{
-		XMLName:   xml.Name{Local: "EventStream"},
-		SchemeID:  config.EventScheme,
-		Value:     config.EventValue,
+		XMLName: xml.Name{
+			Local: "EventStream",
+		},
+
+		SchemeID: config.EventScheme,
+
+		Value: config.EventValue,
+
 		Timescale: 1000000,
 	}
 
 	for _, ev := range Events {
-		if segmentoRelativo == ev.SegStart {
-			payload, _ := json.Marshal(map[string]any{
-				"type":        "start",
-				"name":        ev.Name,
-				"description": ev.Desc,
-				"color":       ev.Color,
-			})
 
-			fmt.Printf(
-				"Evento=%s | SegStart=%d | SegEnd=%d | Relativo=%d\n",
-				ev.Name,
-				ev.SegStart,
-				ev.SegEnd,
-				segmentoRelativo,
+		fmt.Printf(
+			"🔎 EVENT CHECK | global=%d | relativo=%d | start=%d | end=%d | name=%s\n",
+			segmentoGlobal,
+			segmentoRelativo,
+			ev.SegStart,
+			ev.SegEnd,
+			ev.Name,
+		)
+
+		// =====================================================
+		// START EVENT
+		// =====================================================
+
+		if segmentoRelativo == ev.SegStart {
+
+			payload, err := json.Marshal(
+				map[string]any{
+					"type":        "start",
+					"name":        ev.Name,
+					"description": ev.Desc,
+					"color":       ev.Color,
+				},
 			)
 
-			fmt.Println(
-				"global:", segmentoGlobal,
-				"relativo:", segmentoRelativo,
-				"eventos:", len(stream.EventItems),
+			if err != nil {
+
+				fmt.Println(
+					"❌ Erro criando payload START:",
+					err,
+				)
+
+				continue
+			}
+
+			fmt.Printf(
+				"🚀 START EVENT | %s | SegStart=%d | Global=%d | Relativo=%d\n",
+				ev.Name,
+				ev.SegStart,
+				segmentoGlobal,
+				segmentoRelativo,
 			)
 
 			stream.EventItems = append(
 				stream.EventItems,
 				models.Event{
-					XMLName: xml.Name{Local: "Event"},
-					PresentationTime: int64(segmentoGlobal-1) *
-						config.SegmentDurationUs,
+					XMLName: xml.Name{
+						Local: "Event",
+					},
+
+					PresentationTime: int64(
+						segmentoGlobal-1,
+					) * config.SegmentDurationUs,
+
 					Duration: config.SegmentDurationUs,
-					ID:       fmt.Sprintf("%s_start_loop", ev.Name),
-					Data:     string(payload),
+
+					ID: fmt.Sprintf(
+						"%s_start_loop_%d",
+						ev.Name,
+						segmentoGlobal,
+					),
+
+					Data: string(payload),
 				},
 			)
 		}
 
-		if segmentoRelativo == ev.SegEnd {
-			payload, _ := json.Marshal(map[string]any{
-				"type":        "end",
-				"name":        ev.Name,
-				"description": ev.Desc,
-				"color":       ev.Color,
-			})
+		// =====================================================
+		// END EVENT
+		// =====================================================
 
-			stream.EventItems = append(stream.EventItems, models.Event{
-				XMLName: xml.Name{Local: "Event"},
-				PresentationTime: int64(segmentoGlobal-1) *
-					config.SegmentDurationUs,
-				Duration: config.SegmentDurationUs,
-				ID:       fmt.Sprintf("%s_end_loop", ev.Name),
-				Data:     string(payload),
-			})
+		if segmentoRelativo == ev.SegEnd {
+
+			payload, err := json.Marshal(
+				map[string]any{
+					"type":        "end",
+					"name":        ev.Name,
+					"description": ev.Desc,
+					"color":       ev.Color,
+				},
+			)
+
+			if err != nil {
+
+				fmt.Println(
+					"❌ Erro criando payload END:",
+					err,
+				)
+
+				continue
+			}
+
+			fmt.Printf(
+				"🛑 END EVENT | %s | SegEnd=%d | Global=%d | Relativo=%d\n",
+				ev.Name,
+				ev.SegEnd,
+				segmentoGlobal,
+				segmentoRelativo,
+			)
+
+			stream.EventItems = append(
+				stream.EventItems,
+				models.Event{
+					XMLName: xml.Name{
+						Local: "Event",
+					},
+
+					PresentationTime: int64(
+						segmentoGlobal-1,
+					) * config.SegmentDurationUs,
+
+					Duration: config.SegmentDurationUs,
+
+					ID: fmt.Sprintf(
+						"%s_end_loop_%d",
+						ev.Name,
+						segmentoGlobal,
+					),
+
+					Data: string(payload),
+				},
+			)
 		}
 	}
+
+	// =========================================================
+	// NENHUM EVENTO
+	// =========================================================
 
 	if len(stream.EventItems) == 0 {
 		return ""
 	}
 
-	output, err := xml.MarshalIndent(stream, "    ", "    ")
+	// =========================================================
+	// SERIALIZA XML
+	// =========================================================
+
+	output, err := xml.MarshalIndent(
+		stream,
+		"    ",
+		"    ",
+	)
+
 	if err != nil {
+
+		fmt.Println(
+			"❌ Erro serializando EventStream:",
+			err,
+		)
+
 		return ""
 	}
 
