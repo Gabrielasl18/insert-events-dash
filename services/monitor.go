@@ -2,118 +2,249 @@ package services
 
 import (
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
-	"os"
-	"path/filepath"
-	"regexp"
-	"strconv"
+	"io"
+	"net/http"
 	"strings"
 	"sync"
 	"tcc-teste/config"
 	"tcc-teste/models"
-
-	"github.com/fsnotify/fsnotify"
+	"time"
 )
 
 var (
 	Mutex sync.RWMutex
 
-	SegmentoGlobalAtual  int
-	UltimoSegmentoFisico int
-
-	SegmentosPorLoop int
-	Events           []models.Evento
+	SegmentoGlobalAtual int
+	SegmentosPorLoop    int
+	Events              []models.Evento
+	ActiveEvents        map[int]bool = make(map[int]bool)
 )
 
-func ReadAndMarshalFile(path string) error {
-	data, err := os.ReadFile(path)
+// FetchAndParseMPD baixa o MPD via HTTP e extrai os eventos do <EventStream>
+// FetchAndParseMPD baixa o MPD via HTTP e extrai os eventos do <EventStream>
+func FetchAndParseMPD(mpdURL string) error {
+	// 1. Busca o arquivo MPD via HTTP
+	resp, err := http.Get(mpdURL)
 	if err != nil {
-		return err
+		return fmt.Errorf("erro HTTP ao buscar MPD da emissora: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("emissora respondeu com status: %d", resp.StatusCode)
 	}
 
-	var file models.EventsFile
-	if err := json.Unmarshal(data, &file); err != nil {
-		return err
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("erro ao ler o corpo do MPD: %w", err)
 	}
 
-	SegmentosPorLoop = file.LastSeg + 1
-	Events = nil
-
-	for _, item := range file.Actions {
-		Events = append(Events, models.Evento{
-			SegStart: item.SegStart,
-			SegEnd:   item.SegEnd,
-			Name:     item.Action.Name,
-			Desc:     item.Action.Description,
-			Color:    item.Action.Color,
-		})
+	// 2. Parse do XML do MPD
+	var mpd models.MPD
+	if err := xml.Unmarshal(body, &mpd); err != nil {
+		return fmt.Errorf("erro no parse XML do MPD: %w", err)
 	}
 
-	fmt.Printf("✅ %d Events loaded\n", len(Events))
-	fmt.Printf("✅ segmentosPorLoop = %d\n", SegmentosPorLoop)
+	// 3. Determina a quantidade de segmentos por loop
+	segmentosLoop := 60
+	if mpd.Period.EventStream.MaxSegment > 0 {
+		segmentosLoop = mpd.Period.EventStream.MaxSegment
+	} else if mpd.Period.EventStream.LastSegment > 0 {
+		segmentosLoop = mpd.Period.EventStream.LastSegment
+	}
+
+	// 4. Processa os eventos em memória local antes de atualizar o estado global
+	var parsedEvents []models.Evento
+
+	for _, e := range mpd.Period.EventStream.EventItems {
+		rawPayload := strings.TrimSpace(e.Data)
+		if rawPayload == "" {
+			continue
+		}
+
+		// Estratégia A: Formato estruturado (Envelope models.MPDEventPayload)
+		var payload models.MPDEventPayload
+		if err := json.Unmarshal([]byte(rawPayload), &payload); err == nil && (payload.Action.Name != "" || len(payload.Action.Color) > 0) {
+			parsedEvents = append(parsedEvents, models.Evento{
+				SegStart: payload.SegStart,
+				SegEnd:   payload.SegEnd,
+				Name:     payload.Action.Name,
+				Desc:     payload.Action.Description,
+				Color:    payload.Action.Color,
+			})
+			continue
+		}
+
+		// Estratégia B: Mapa genérico dinâmico
+		var genericMap map[string]interface{}
+		if err := json.Unmarshal([]byte(rawPayload), &genericMap); err == nil {
+			evento := parseGenericEventMap(genericMap, e.SegStart, e.SegEnd)
+			parsedEvents = append(parsedEvents, evento)
+		}
+	}
+
+	// 5. Atualização segura do estado global protegida pelo Mutex
+	Mutex.Lock()
+	SegmentosPorLoop = segmentosLoop
+	Events = parsedEvents
+	Mutex.Unlock()
+
+	fmt.Printf("✅ [AoP] %d eventos extraídos com sucesso do EventStream do MPD!\n", len(parsedEvents))
+	fmt.Printf("✅ [AoP] Segmentos por Loop = %d\n", segmentosLoop)
 	return nil
 }
 
-func WatchSegments() {
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		panic(err)
+// Helper para extrair atributos de um mapa genérico de eventos
+func parseGenericEventMap(genericMap map[string]interface{}, defaultSegStart, defaultSegEnd int) models.Evento {
+	var name, desc string
+	var color []int
+
+	// Se existir o objeto 'action', foca nele. Caso contrário, lê da raiz do mapa.
+	targetMap := genericMap
+	if actionObj, ok := genericMap["action"].(map[string]interface{}); ok {
+		targetMap = actionObj
 	}
-	defer watcher.Close()
 
-	// Listen to configutation file (file dash with chunks)
-	if err := watcher.Add(config.Directory); err != nil {
-		panic(err)
+	// Extrai Name e Description
+	if n, ok := targetMap["name"].(string); ok {
+		name = n
+	}
+	if d, ok := targetMap["description"].(string); ok {
+		desc = d
 	}
 
-	re := regexp.MustCompile(`chunk-stream0-0*(\d+)\.m4s$`)
+	// Extrai vetor de cores
+	if cols, ok := targetMap["color"].([]interface{}); ok {
+		for _, c := range cols {
+			switch val := c.(type) {
+			case float64:
+				color = append(color, int(val))
+			case int:
+				color = append(color, val)
+			}
+		}
+	}
 
-	fmt.Println("👀 Monitorando segmentos realtime...")
+	// Extrai limites de segmento se fornecidos no próprio JSON
+	segStart := defaultSegStart
+	segEnd := defaultSegEnd
+
+	if s, ok := genericMap["seg_start"].(float64); ok {
+		segStart = int(s)
+	}
+	if s, ok := genericMap["seg_end"].(float64); ok {
+		segEnd = int(s)
+	}
+
+	return models.Evento{
+		SegStart: segStart,
+		SegEnd:   segEnd,
+		Name:     name,
+		Desc:     desc,
+		Color:    color,
+	}
+}
+
+// WatchSegmentsHTTP monitora a disponibilidade dos chunks .m4s fazendo polling no servidor Express
+// Defina quantos segmentos deseja antecipar para compensar o buffer do player (ex: 1 ou 2)
+func WatchSegmentsHTTP(baseURL string) {
+	currentSegment := 1
+	client := &http.Client{Timeout: 1 * time.Second} // Reduzido o timeout para 1s
+
+	fmt.Println("👀 AoP Monitorando requisições de chunks no servidor via HTTP...")
 
 	for {
-		select {
-		case event := <-watcher.Events:
-			if event.Op&fsnotify.Create != fsnotify.Create &&
-				event.Op&fsnotify.Rename != fsnotify.Rename {
-				continue
+		formats := []string{
+			fmt.Sprintf("chunk-stream0-%05d.m4s", currentSegment),
+			fmt.Sprintf("chunk-stream0-%d.m4s", currentSegment),
+			fmt.Sprintf("chunk-stream0-%03d.m4s", currentSegment),
+		}
+
+		found := false
+
+		for _, chunkName := range formats {
+			chunkURL := fmt.Sprintf("%s/%s", baseURL, chunkName)
+
+			resp, err := client.Head(chunkURL)
+			if err == nil && resp.StatusCode == http.StatusOK {
+				resp.Body.Close()
+
+				Mutex.Lock()
+				SegmentoGlobalAtual = currentSegment
+
+				if SegmentosPorLoop <= 0 {
+					SegmentosPorLoop = 60
+				}
+
+				// Aplica o offset de antecipação para compensar o delay
+				segmentoCalculado := currentSegment
+				segmentoRelativo := (segmentoCalculado - 1) % SegmentosPorLoop
+
+				fmt.Printf("📦 [HTTP Client] Chunk: %s | 🔁 Relativo: %d\n",
+					chunkName, segmentoRelativo)
+
+				// Dispara os eventos calculados com antecipação
+				checkAndPublishEvents(segmentoRelativo)
+				Mutex.Unlock()
+
+				currentSegment++
+				found = true
+				break
 			}
 
-			name := filepath.Base(event.Name)
-
-			fmt.Println(name)
-
-			if strings.HasSuffix(name, ".tmp") {
-				continue
+			if resp != nil {
+				resp.Body.Close()
 			}
+		}
 
-			// até a linha 93 verifica se os chunks (ex: chunk-stream-0-0223.m4s) estão vindo
-			match := re.FindStringSubmatch(name)
-			fmt.Println(match)
+		if !found {
+			// Reduzido de 500ms para 100ms para reagir muito mais rápido assim que o chunk surge
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+}
 
-			if len(match) < 2 {
-				continue
+// checkAndPublishEvents efetua o disparo do evento no Broker MQTT (Camada AoP)
+func checkAndPublishEvents(segmentoRelativo int) {
+	for i, evt := range Events {
+		if segmentoRelativo >= evt.SegStart && segmentoRelativo <= evt.SegEnd {
+			if !ActiveEvents[i] {
+				ActiveEvents[i] = true
+
+				payloadData := models.EventPayload{
+					Name:        evt.Name,
+					Description: evt.Desc,
+					Color:       evt.Color,
+					SegStart:    evt.SegStart,
+					SegEnd:      evt.SegEnd,
+				}
+
+				payload, err := json.Marshal(payloadData)
+				if err != nil {
+					fmt.Printf("❌ [AoP -> MQTT] Erro ao serializar JSON: %v\n", err)
+					continue
+				}
+
+				topic := "video/event"
+				fmt.Printf("🚀 [AoP -> MQTT] Disparando evento no segmento %d (Tópico: %s): %s\n", segmentoRelativo, topic, string(payload))
+
+				// Publica no tópico video/event no Broker MQTT
+				if config.MQTTClient != nil && config.MQTTClient.IsConnected() {
+					token := config.MQTTClient.Publish(topic, 0, false, payload)
+					token.Wait()
+					if token.Error() != nil {
+						fmt.Printf("❌ [AoP -> MQTT] Erro ao publicar no tópico %s: %v\n", topic, token.Error())
+					} else {
+						fmt.Printf("✅ [AoP -> MQTT] Publicado com sucesso no tópico '%s'!\n", topic)
+					}
+				} else {
+					fmt.Println("⚠️ [AoP -> MQTT] Cliente MQTT não está conectado!")
+				}
 			}
-
-			segmentoFisico, err := strconv.Atoi(match[1])
-			if err != nil {
-				continue
-			}
-
-			Mutex.Lock()
-
-			UltimoSegmentoFisico = segmentoFisico
-			SegmentoGlobalAtual = segmentoFisico
-
-			segmentoRelativo :=
-				(segmentoFisico - 1) % SegmentosPorLoop
-
-			fmt.Println("📦 segmento físico:", segmentoFisico)
-			fmt.Println("🔁 segmento relativo:", segmentoRelativo)
-
-			Mutex.Unlock()
-
-		case err := <-watcher.Errors:
-			fmt.Println("watch error:", err)
+		} else {
+			delete(ActiveEvents, i)
 		}
 	}
 }
